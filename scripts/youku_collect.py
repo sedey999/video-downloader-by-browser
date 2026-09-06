@@ -1,7 +1,10 @@
-"""采集全部 33 个分片的 URL。
+"""采集优酷全部分片的窗口 URL。
 优酷分片规律：
-  文件名 03000C21{HEX}649EAA...  其中 {HEX} = 分片号(00~20 十六进制)
-  每个分片约 140 秒，seek 到 i*140+5 即可引出第 i 个分片的 URL
+  文件名 03000C2{X}{HEX}649EAA...  其中：
+    前 7 位 03000C2 固定；第 8 位 {X} 随视频/流变化（实测见过 0/1/7，
+      例如同一批两个视频分别是 03000C20 和 03000C27），**不要写死**；
+    {HEX} = 分片号(00~.. 十六进制 2 位)，这才是播放顺序的权威编号。
+  每个分片约 140 秒，seek 到 i*140+2 即可引出第 i 个分片的 URL
   请求带 ts_start/ts_end/ts_seg_no(10秒窗口)，去掉后可取回整个分片
 """
 import json, os, math, time, urllib.parse as up
@@ -17,17 +20,23 @@ CHUNKS = max(1, math.ceil(DUR / WIN))
 print(f'[collect] 按时长 {DUR:.0f}s 推算分片数 N={CHUNKS}')
 
 
+import re as _re
+_SEG_RE = _re.compile(r'^03000C2[0-9a-fA-F]([0-9a-fA-F]{2})')
+
+
 def chunk_index(url):
-    """从 URL 文件名提取分片号(十六进制2位)"""
+    """从 URL 文件名提取分片号(十六进制2位)。
+    文件名 03000C2 X HH 64..：前 7 位 03000C2 固定，第 8 位 X 随流变化(0/1/7..)，
+    第 9-10 位 HH 才是分片号。早期写死 startswith('03000C21') 会漏掉 X≠1 的视频
+    （实测 03000C20 / 03000C27 整片采不到），故第 8 位通配。"""
     fn = up.urlparse(url).path.split('/')[-1]
-    # 03000C21 XX 649EAA...
-    if len(fn) >= 10 and fn.startswith('03000C21'):
-        hx = fn[8:10].lower()
-        try:
-            return int(hx, 16)
-        except ValueError:
-            return None
-    return None
+    m = _SEG_RE.match(fn)
+    if not m:
+        return None
+    try:
+        return int(m.group(1), 16)
+    except ValueError:
+        return None
 
 
 def discovered(since_ts=0):
@@ -65,7 +74,10 @@ def main():
             break
         for k in missing:
             # 在分片内取多个探测点，任一点命中即可
-            for offset in (5, 60, 120, 30, 95):
+            # ⚠️ offset 首选 2 而非 5：实测优酷播放器 seek 到 ≤5s（chunk 0 内）时
+            #    经常不重新发 chunk 0 请求（判定为"已在开头附近"），导致 chunk 0 采集
+            #    盲区——3 轮全 MISS（2026-09 实战踩坑）。seek 2s 可稳定触发。
+            for offset in (2, 5, 60, 120, 30, 95):
                 got = discovered(t0)
                 if k in got:
                     break
@@ -74,16 +86,40 @@ def main():
                     f.write(f'seek {t:.1f}\n')
                 time.sleep(3.2)
             got = discovered(t0)
-            print(f'  chunk {k:02x} (t={WIN*k+5:.0f}s) -> {"OK" if k in got else "MISS"}   共 {len(got)}/33')
+            print(f'  chunk {k:02x} (t={WIN*k+5:.0f}s) -> {"OK" if k in got else "MISS"}   共 {len(got)}/{CHUNKS}')
         time.sleep(1)
 
     got = discovered(t0)
     print(f'\n最终发现 {len(got)}/{CHUNKS} 个分片')
     out = {}
+    mismatch = 0
     for k in sorted(got):
-        out[f'{k:02x}'] = got[k][1]
-        fn = up.urlparse(got[k][1]).path.split('/')[-1][:12]
+        url = got[k][1]
+        # 权威顺序校验：URL 文件名内嵌的段号必须 == 字典 key（chunk_index 本就从
+        # URL 提取段号，这里二次核验，防止任何 key 记错/错位——内嵌段号是优酷 CDN
+        # 生成的源播放顺序，比任何本地排序都可信）。
+        emb = chunk_index(url)
+        if emb != k:
+            print(f'  ⚠️ 段号不一致: key={k:02x} 但 URL 内嵌段号={emb if emb is None else f"{emb:02x}"}')
+            mismatch += 1
+        out[f'{k:02x}'] = url
+        fn = up.urlparse(url).path.split('/')[-1][:12]
         print(f'  {k:02x}  {fn}')
+    missing = [f'{k:02x}' for k in range(CHUNKS) if k not in got]
+    # N=ceil(dur/140) 可能比实际多 1（末片按 140s 切，但整片可能刚好不产生最后一片，
+    # 此前实测 dur=4524 → N=33 而实际只有 00..1f 共 32 片且 00..1f 连续无洞）。
+    # 区分两种情况：只缺"最后一个号"且其余 0..N-2 连续 → 可能是 N 多算，放行并提示；
+    # 中间有洞 → 真漏片，必须重采。
+    have = sorted(got)
+    hole_idx = [k for i, k in enumerate(have) if i > 0 and k != have[i - 1] + 1]
+    if hole_idx:
+        print(f'\n⛔ 分片号中间有断档（真漏片）: 断在 {[f"{k:02x}" for k in hole_idx]}，'
+              f'请重跑本脚本补齐；缺 {missing}')
+    elif missing:
+        print(f'\n⚠️ 仅缺末尾 {missing}（0..{have[-1]:02x} 连续无洞）：'
+              f'多为 N=ceil(dur/140) 多算 1，末片本就不存在。合并后用时长核对页面 dur 即可确认。')
+    if mismatch:
+        print(f'⛔ {mismatch} 个分片 key 与 URL 内嵌段号不一致，勿直接合并！')
     with open(ROOT + 'chunks.json', 'w') as f:
         json.dump(out, f, indent=1)
     print(f'\n已写入 chunks.json ({len(out)} 条)')

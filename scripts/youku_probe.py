@@ -55,7 +55,7 @@ def main():
     print(f'待探测 {len(chunks)} 个分片...')
 
     with ThreadPoolExecutor(max_workers=8) as ex:
-        res = list(ex.map(probe, sorted(chunks.items())))
+        res = list(ex.map(probe, sorted(chunks.items(), key=lambda kv: int(kv[0], 16))))
 
     total, ok = 0, 0
     out = {}

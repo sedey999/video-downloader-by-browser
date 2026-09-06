@@ -325,6 +325,16 @@ const t = setInterval(async () => {
             log('[logininfo]', loggedIn ? '已登录（可切1080P）✓' : '未登录（需提醒用户登录+切1080P）✗',
                 '| 登录cookie:', loginCookies.join(', ') || '(无 unb/tracknick)');
           } catch (e) { log('[logininfo err]', e.message.slice(0, 100)); }
+        } else if (op === 'cookies') {
+          // 导出全部 cookie（含 httpOnly 的 SESSDATA 等），供需要登录态的站点（B站/优酷/腾讯）拉高画质 manifest 用
+          try {
+            const cookies = await ctx.cookies();
+            fs.writeFileSync(path.join(ROOT, 'cookies.json'), JSON.stringify(cookies, null, 2));
+            const names = cookies.map(c => c.name);
+            log('[cookies] dumped', cookies.length, 'cookies;',
+              'SESSDATA=' + (names.includes('SESSDATA') ? '有✓' : '无✗'),
+              '| bili_jct=' + (names.includes('bili_jct') ? '有✓' : '无✗'));
+          } catch (e) { log('[cookies err]', e.message.slice(0, 100)); }
         } else if (op === 'pwfill') {
           try { log('[pwfill]', await page.evaluate(fillPwJs(arg || ''))); }
           catch (e) { log('[pwfill err]', e.message.slice(0, 60)); }
