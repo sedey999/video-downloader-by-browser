@@ -1,6 +1,6 @@
 # 优酷（youku.com）流媒体结构 —— 实战逆向笔记
 
-> 2026-09 实测于 `https://v.youku.com/v_show/id_XNTk3ODI4MzAwMA==.html`（01:16:39 / 1080P）
+> 2026-09 实测于 `https://v.youku.com/v_show/id_<vid>.html`（01:16:39 / 1080P）
 
 ## 一、分片结构（最关键）
 
